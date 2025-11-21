@@ -19,33 +19,37 @@ def generate_affiliate_link(original_url: str) -> str:
 
 def compute_best_offer(keyword: str, results_json: dict, min_discount_pct: float = 5.0):
     best_item = None
-    best_discount = -9999  # permite pegar qualquer produto com desconto real
+    best_score = -999999  # quanto maior, melhor
+    results = results_json.get("results", [])
 
-    for item in results_json.get("results", []):
+    for item in results:
         price = item.get("price")
-        original_price = item.get("original_price") or item.get("base_price")
+        original_price = item.get("original_price") or item.get("base_price") or price
 
-        # Se não tem preço original, assume sem desconto
-        if not original_price:
-            original_price = price
-
-        if not price or not original_price:
+        if not price:
             continue
 
-        discount_pct = (original_price - price) / max(original_price, 0.01) * 100
+        # desconto artificial baseado em diferença de preço
+        discount_pct = 0.0
+        if original_price > price:
+            discount_pct = (original_price - price) / original_price * 100
 
-        if discount_pct >= min_discount_pct and discount_pct > best_discount:
-            best_discount = discount_pct
+        # score: desconto +  lado barato
+        score = discount_pct * 10 - price  # peso do desconto + peso do preço baixo
+
+        if score > best_score:
+            best_score = score
             best_item = {
                 "title": item.get("title"),
                 "price": price,
                 "original_price": original_price,
                 "discount_pct": round(discount_pct, 2),
                 "permalink": item.get("permalink"),
-                "thumbnail": item.get("thumbnail")
+                "thumbnail": item.get("thumbnail"),
             }
 
     return best_item
+
 
 
 def format_message(item: dict, keyword: str) -> str:
@@ -98,3 +102,4 @@ def get_message(keyword: str, min_discount: float = 5.0):
 
     msg = format_message(best, keyword)
     return {"message": msg, "item": best}
+
