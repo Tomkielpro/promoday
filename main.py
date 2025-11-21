@@ -5,7 +5,7 @@ import requests
 app = FastAPI(
     title="PromoDay API",
     description="API que busca ofertas no Mercado Livre para o PromoDay",
-    version="1.0"
+    version="1.1"
 )
 
 ML_SITE = "MLB"  # Brasil
@@ -27,8 +27,14 @@ def find_best_offer(keyword: str, min_discount_pct: float):
         "sort": "price_asc"
     }
 
+    # NECESSÁRIO PARA EVITAR ERRO 403 (Mercado Livre bloqueia sem User-Agent)
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+        "Accept": "application/json",
+    }
+
     try:
-        response = requests.get(url, params=params, timeout=10)
+        response = requests.get(url, params=params, headers=headers, timeout=10)
         response.raise_for_status()
     except Exception as e:
         raise Exception(f"Erro ao buscar dados do ML: {e}")
