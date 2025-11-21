@@ -1,15 +1,15 @@
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Body
 from fastapi.responses import JSONResponse
-import requests
+import threading
 
 app = FastAPI(
     title="PromoDay API",
-    description="API que busca ofertas no Mercado Livre para o PromoDay",
-    version="1.1"
+    description="API que recebe dados do ML a partir do PC e entrega mensagens prontas para o WhatsApp",
+    version="2.0"
 )
 
-ML_SITE = "MLB"  # Brasil
-
+# Armazena os últimos resultados recebidos do PC
+LATEST_DATA = {}
 
 def generate_affiliate_link(original_url: str) -> str:
     """
@@ -19,31 +19,11 @@ def generate_affiliate_link(original_url: str) -> str:
     return original_url  # TODO: adaptar seu padrão de afiliado
 
 
-def find_best_offer(keyword: str, min_discount_pct: float):
-    url = f"https://api.mercadolibre.com/sites/{ML_SITE}/search"
-    params = {
-        "q": keyword,
-        "limit": 30,
-        "sort": "price_asc"
-    }
-
-    # NECESSÁRIO PARA EVITAR ERRO 403 (Mercado Livre bloqueia sem User-Agent)
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-        "Accept": "application/json",
-    }
-
-    try:
-        response = requests.get(url, params=params, headers=headers, timeout=10)
-        response.raise_for_status()
-    except Exception as e:
-        raise Exception(f"Erro ao buscar dados do ML: {e}")
-
-    data = response.json()
+def compute_best_offer(keyword: str, results_json: dict, min_discount_pct: float = 10.0):
     best_item = None
-    best_discount = 0
+    best_disc = 0
 
-    for item in data.get("results", []):
+    for item in results_json.get("results", []):
         price = item.get("price")
         original_price = item.get("original_price") or price
 
@@ -52,8 +32,8 @@ def find_best_offer(keyword: str, min_discount_pct: float):
 
         discount_pct = (original_price - price) / original_price * 100
 
-        if discount_pct >= min_discount_pct and discount_pct > best_discount:
-            best_discount = discount_pct
+        if discount_pct >= min_discount_pct and discount_pct > best_disc:
+            best_disc = discount_pct
             best_item = {
                 "title": item.get("title"),
                 "price": price,
@@ -67,7 +47,7 @@ def find_best_offer(keyword: str, min_discount_pct: float):
 
 
 def format_message(item: dict, keyword: str) -> str:
-    affiliate = generate_affiliate_link(item["permalink"])
+    link = generate_affiliate_link(item["permalink"])
 
     msg = f"""
 🔥 *PROMODAY – OFERTA ENCONTRADA!* 🔥
@@ -78,12 +58,11 @@ def format_message(item: dict, keyword: str) -> str:
 📉 Desconto: *{item['discount_pct']}%*
 
 🔗 Link com desconto:
-{affiliate}
+{link}
 
 🧠 Palavra-chave analisada: *{keyword}*
 ⚠️ Preço pode mudar a qualquer momento!
     """
-
     return msg.strip()
 
 
@@ -92,25 +71,43 @@ def root():
     return {"status": "OK", "service": "PromoDay API"}
 
 
-@app.get("/promo")
-def promo(
-    keyword: str = Query(..., description="Ex: fone, airfryer, cafeteira"),
-    min_discount: float = Query(10.0, description="Desconto mínimo em %")
+# ============================================
+#  ENDPOINT QUE RECEBE DADOS DO PC
+# ============================================
+
+@app.post("/promo_data")
+def receive_data(
+    keyword: str = Body(...),
+    results: dict = Body(...)
 ):
-    try:
-        offer = find_best_offer(keyword, min_discount)
-    except Exception as e:
-        return JSONResponse(
-            status_code=500,
-            content={"error": str(e)}
-        )
-
-    if not offer:
-        return {"message": None, "info": "Sem ofertas relevantes agora."}
-
-    message = format_message(offer, keyword)
-
-    return {
-        "message": message,
-        "item": offer
+    """
+    O PC envia:
+    {
+      "keyword": "airfryer",
+      "results": { dados completos do ML }
     }
+    """
+    LATEST_DATA[keyword] = results
+    return {"status": "received", "keyword": keyword}
+
+
+# ============================================
+#  ENDPOINT PARA O ANDROID PEGAR A MENSAGEM
+# ============================================
+
+@app.get("/message")
+def get_message(keyword: str, min_discount: float = 10.0):
+    """
+    Automate chama:
+    GET /message?keyword=airfryer&min_discount=20
+    """
+    if keyword not in LATEST_DATA:
+        return {"message": None, "info": "Nenhum dado enviado pelo PC ainda."}
+
+    best_offer = compute_best_offer(keyword, LATEST_DATA[keyword], min_discount)
+
+    if not best_offer:
+        return {"message": None, "info": "Nenhuma oferta com desconto mínimo."}
+
+    message = format_message(best_offer, keyword)
+    return {"message": message, "item": best_offer}
